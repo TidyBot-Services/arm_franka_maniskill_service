@@ -33,8 +33,10 @@ class FrankaBridge:
     """Protocol bridge: ZMQ REP + PUB + SUB for Franka arm control."""
 
     def __init__(self, server, cmd_port=FRANKA_CMD_PORT,
-                 state_port=FRANKA_STATE_PORT, stream_port=FRANKA_STREAM_PORT):
+                 state_port=FRANKA_STATE_PORT, stream_port=FRANKA_STREAM_PORT,
+                 env_idx=0):
         self._server = server
+        self._env_idx = env_idx
         self._cmd_port = cmd_port
         self._state_port = state_port
         self._stream_port = stream_port
@@ -91,7 +93,7 @@ class FrankaBridge:
 
         interval = 1.0 / STATE_HZ
         while self._running:
-            state = self._server.get_state()
+            state = self._server.get_state(env_idx=self._env_idx)
             msg = self._build_state_msg(state)
             sock.send(msgpack.packb(msg, use_bin_type=True))
             time.sleep(interval)
@@ -125,7 +127,7 @@ class FrankaBridge:
     def _dispatch_cmd(self, req):
         msg_type = req.get("msg_type", -1)
         if msg_type == MSG_GET_STATE:
-            return self._build_state_msg(self._server.get_state())
+            return self._build_state_msg(self._server.get_state(env_idx=self._env_idx))
         elif msg_type == MSG_SET_CONTROL_MODE:
             self._control_mode = req.get("control_mode", 0)
             return {"msg_type": msg_type, "success": True}
@@ -171,7 +173,7 @@ class FrankaBridge:
         if msg_type == MSG_JOINT_POSITION_CMD:
             q = msg.get("q", [])
             if len(q) == 7:
-                self._server.set_arm_action(q)
+                self._server.set_arm_action(env_idx=self._env_idx, targets=q)
 
         elif msg_type == MSG_CARTESIAN_POSE_CMD:
             o_t_ee = msg.get("O_T_EE", msg.get("o_t_ee", msg.get("pose", [])))
@@ -180,12 +182,12 @@ class FrankaBridge:
                 if self._ik_chain is not None:
                     joint_targets = self._cartesian_to_joints(o_t_ee)
                     if joint_targets is not None:
-                        self._server.set_arm_action(joint_targets)
+                        self._server.set_arm_action(env_idx=self._env_idx, targets=joint_targets)
                 else:
                     # Fallback proportional IK
                     joint_targets = self._simple_ik(o_t_ee)
                     if joint_targets is not None:
-                        self._server.set_arm_action(joint_targets)
+                        self._server.set_arm_action(env_idx=self._env_idx, targets=joint_targets)
 
     # -- Helpers -----------------------------------------------------------
 
@@ -282,7 +284,7 @@ class FrankaBridge:
             target_pos = torch.tensor(target_urdf, dtype=torch.float32)
 
             # Seed IK with current joint positions
-            state = self._server.get_state()
+            state = self._server.get_state(env_idx=self._env_idx)
             q = torch.tensor(state.joint_positions, dtype=torch.float32).unsqueeze(0)
 
             # Damped least-squares IK with finite-difference Jacobian
@@ -318,7 +320,7 @@ class FrankaBridge:
             mat = np.array(o_t_ee).reshape(4, 4, order='F')
             target_pos = mat[:3, 3]
 
-            state = self._server.get_state()
+            state = self._server.get_state(env_idx=self._env_idx)
             q = np.array(state.joint_positions)
             current_pos = np.array(state.ee_pos)
 
